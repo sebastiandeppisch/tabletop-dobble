@@ -1,5 +1,6 @@
 import type * as CV from '@techstark/opencv-js'
-import type { CardMatch, DetectedCard, DetectedSymbol, DetectionResult, Point, RgbaImage } from './types'
+import { extractFeatures, matchFeatures, type CardFeatures, type KeypointMatch } from './keypoints'
+import type { CardMatch, DetectedCard, DetectedSymbol, DetectionResult, MatchRegion, Point, RgbaImage } from './types'
 
 type Cv = typeof CV
 type Mat = CV.Mat
@@ -13,6 +14,7 @@ const MIN_CARD_AREA = 0.02
 const MIN_SYMBOL_AREA = 0.004
 const CARD_SEARCH_SIZE = 480
 const EDGE_THRESHOLD = 32
+const MAX_SYMBOL_AREA = 0.25
 
 interface Disposable {
   delete(): void
@@ -75,17 +77,46 @@ export function detect(cv: Cv, image: RgbaImage): DetectionResult {
       return symbols
     })
 
-    const patches = cardRegions.map((card, i) => cardSymbols[i].map((symbol) => symbolPatches(cv, lab, labels, card, symbol, scope)))
+    const gray = scope.add(new cv.Mat())
+    cv.cvtColor(rgb, gray, cv.COLOR_RGB2GRAY)
+    const chroma = chromaSampler(lab)
+    const features = cardRegions.map((card) => cardFeatures(cv, gray, chroma, card, scope))
+    let patches: Patch[][][] | null = null
 
     const matches: CardMatch[] = []
     for (let a = 0; a < cardRegions.length; a++) {
       for (let b = a + 1; b < cardRegions.length; b++) {
+        const keypoints = matchFeatures(cv, features[a], features[b], (item) => scope.add(item))
+        if (keypoints) {
+          matches.push({
+            a: keypointRegion(a, keypoints.inliersA, cardSymbols[a], cardRadius(cardRegions[a])),
+            b: keypointRegion(b, keypoints.inliersB, cardSymbols[b], cardRadius(cardRegions[b])),
+            confidence: keypointConfidence(keypoints),
+            method: 'keypoints',
+          })
+          continue
+        }
+
+        patches ??= cardRegions.map((card, i) => cardSymbols[i].map((symbol) => symbolPatches(cv, lab, labels, card, symbol, scope)))
         const match = matchCards(patches[a], patches[b])
-        if (match) matches.push({ ...match, a: { card: a, symbol: match.a }, b: { card: b, symbol: match.b } })
+        if (match) {
+          matches.push({
+            a: symbolRegion(a, cardSymbols[a][match.a]),
+            b: symbolRegion(b, cardSymbols[b][match.b]),
+            confidence: match.confidence,
+            method: 'patches',
+          })
+        }
       }
     }
 
     const toImage = (p: Point): Point => ({ x: p.x / scale, y: p.y / scale })
+    const regionToImage = (region: MatchRegion): MatchRegion => ({
+      card: region.card,
+      center: toImage(region.center),
+      radius: region.radius / scale,
+      contour: region.contour?.map(toImage),
+    })
     const cards: DetectedCard[] = cardRegions.map((card, i) => ({
       center: toImage(card.center),
       size: { width: card.size.width / scale, height: card.size.height / scale },
@@ -97,7 +128,13 @@ export function detect(cv: Cv, image: RgbaImage): DetectionResult {
       })),
     }))
 
-    return { width: image.width, height: image.height, cards, matches, durationMs: performance.now() - started }
+    return {
+      width: image.width,
+      height: image.height,
+      cards,
+      matches: matches.map((m) => ({ ...m, a: regionToImage(m.a), b: regionToImage(m.b) })),
+      durationMs: performance.now() - started,
+    }
   } finally {
     scope.dispose()
   }
@@ -132,6 +169,11 @@ function findCards(cv: Cv, full: Mat, scope: Scope): CardRegion[] {
   cv.threshold(white, white, 0, 255, cv.THRESH_BINARY | cv.THRESH_OTSU)
   const kernel = scope.add(cv.getStructuringElement(cv.MORPH_ELLIPSE, new cv.Size(5, 5)))
   cv.morphologyEx(white, white, cv.MORPH_OPEN, kernel)
+
+  // Bridges symbols touching the rim so the card outline stays closed.
+  const bridge = Math.round(Math.max(rgb.rows, rgb.cols) * 0.04) | 1
+  const closing = scope.add(cv.getStructuringElement(cv.MORPH_ELLIPSE, new cv.Size(bridge, bridge)))
+  cv.morphologyEx(white, white, cv.MORPH_CLOSE, closing)
 
   const filled = scope.add(cv.Mat.zeros(rgb.rows, rgb.cols, cv.CV_8UC1))
   forEachContour(cv, white, scope, (contour, index, all) => {
@@ -254,6 +296,66 @@ function lightnessBackground(cv: Cv, lab: Mat, cards: CardRegion[], scope: Scope
   return background
 }
 
+function innerMask(cv: Cv, card: CardRegion, scope: Scope): Mat {
+  const { x, y, width, height } = card.rect
+  const inner = scope.add(cv.Mat.zeros(height, width, cv.CV_8UC1))
+  cv.ellipse1(
+    inner,
+    new cv.RotatedRect(new cv.Point(card.center.x - x, card.center.y - y), new cv.Size(card.size.width * 0.93, card.size.height * 0.93), card.angle),
+    new cv.Scalar(255),
+    cv.FILLED,
+    cv.LINE_8,
+  )
+  cv.bitwise_and(inner, scope.add(card.mask.roi(card.rect)), inner)
+  return inner
+}
+
+function cardFeatures(cv: Cv, gray: Mat, chroma: ChromaSampler, card: CardRegion, scope: Scope): CardFeatures {
+  const r = card.rectify
+  return extractFeatures(
+    cv,
+    {
+      gray: crop(cv, gray, card.rect, scope),
+      mask: innerMask(cv, card, scope),
+      offset: { x: card.rect.x, y: card.rect.y },
+      radius: cardRadius(card),
+      rectify: (p) => ({ x: r[0] * p.x + r[1] * p.y + r[2], y: r[3] * p.x + r[4] * p.y + r[5] }),
+      chroma,
+    },
+    (item) => scope.add(item),
+  )
+}
+
+type ChromaSampler = (p: Point, radius: number) => [number, number]
+
+function chromaSampler(lab: Mat): ChromaSampler {
+  const data = lab.data
+  const { rows, cols } = lab
+  return (p, radius) => {
+    const r = Math.round(radius)
+    const x0 = Math.max(0, Math.round(p.x) - r)
+    const x1 = Math.min(cols - 1, Math.round(p.x) + r)
+    const y0 = Math.max(0, Math.round(p.y) - r)
+    const y1 = Math.min(rows - 1, Math.round(p.y) + r)
+    let a = 0
+    let b = 0
+    let n = 0
+    for (let y = y0; y <= y1; y++) {
+      for (let x = x0; x <= x1; x++) {
+        const i = (y * cols + x) * 3
+        a += data[i + 1]
+        b += data[i + 2]
+        n++
+      }
+    }
+    return n ? [a / n, b / n] : [128, 128]
+  }
+}
+
+function cardRadius(card: CardRegion): number {
+  return Math.max(card.size.width, card.size.height) / 2
+}
+
 function findSymbols(
   cv: Cv,
   lab: Mat,
@@ -264,19 +366,10 @@ function findSymbols(
   scope: Scope,
 ): SymbolRegion[] {
   const { x: ox, y: oy, width: w, height: h } = card.rect
-  const radius = Math.max(card.size.width, card.size.height) / 2
+  const radius = cardRadius(card)
   const labRoi = crop(cv, lab, card.rect, scope)
   const bgRoi = crop(cv, background, card.rect, scope)
-  const inner = scope.add(cv.Mat.zeros(h, w, cv.CV_8UC1))
-  cv.ellipse1(
-    inner,
-    new cv.RotatedRect(new cv.Point(card.center.x - ox, card.center.y - oy), new cv.Size(card.size.width * 0.93, card.size.height * 0.93), card.angle),
-    new cv.Scalar(255),
-    cv.FILLED,
-    cv.LINE_8,
-  )
-  const cardMask = scope.add(card.mask.roi(card.rect))
-  cv.bitwise_and(inner, cardMask, inner)
+  const inner = innerMask(cv, card, scope)
 
   const px = labRoi.data
   const bg = bgRoi.data
@@ -319,7 +412,7 @@ function findSymbols(
   const offset = new cv.Point(ox, oy)
   forEachContour(cv, silhouettes, scope, (outline, index, all) => {
     const moments = cv.moments(outline)
-    if (moments.m00 < cardArea * MIN_SYMBOL_AREA) return
+    if (moments.m00 < cardArea * MIN_SYMBOL_AREA || moments.m00 > cardArea * MAX_SYMBOL_AREA) return
     const id = firstId + symbols.length
     if (id > 255) return
     cv.drawContours(labels, all, index, new cv.Scalar(id), cv.FILLED, cv.LINE_8, scope.add(new cv.Mat()), 0, offset)
@@ -421,6 +514,37 @@ function patchDistance(a: Patch, b: Patch): number {
     }
   }
   return union ? cost / union : 1
+}
+
+function symbolRegion(card: number, symbol: SymbolRegion): MatchRegion {
+  return { card, center: symbol.center, radius: symbol.radius, contour: symbol.contour }
+}
+
+// Prefers the segmented symbol holding most inliers; falls back to a circle around the inliers.
+function keypointRegion(card: number, inliers: Point[], symbols: SymbolRegion[], radius: number): MatchRegion {
+  const owner = symbols.find((s) => inliers.filter((p) => insidePolygon(p, s.contour)).length >= inliers.length * 0.6)
+  if (owner && owner.radius < radius * 0.4) return symbolRegion(card, owner)
+
+  const center = {
+    x: inliers.reduce((sum, p) => sum + p.x, 0) / inliers.length,
+    y: inliers.reduce((sum, p) => sum + p.y, 0) / inliers.length,
+  }
+  const spread = Math.max(...inliers.map((p) => Math.hypot(p.x - center.x, p.y - center.y)))
+  return { card, center, radius: Math.max(spread * 1.1, radius * 0.12) }
+}
+
+function keypointConfidence(match: KeypointMatch): number {
+  return Math.max(0, Math.min(1, 1 - match.runnerUp / match.inliers))
+}
+
+function insidePolygon(p: Point, polygon: Point[]): boolean {
+  let inside = false
+  for (let i = 0, j = polygon.length - 1; i < polygon.length; j = i++) {
+    const a = polygon[i]
+    const b = polygon[j]
+    if (a.y > p.y !== b.y > p.y && p.x < ((b.x - a.x) * (p.y - a.y)) / (b.y - a.y) + a.x) inside = !inside
+  }
+  return inside
 }
 
 function matchCards(a: Patch[][], b: Patch[][]): { a: number; b: number; score: number; confidence: number } | null {

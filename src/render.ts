@@ -52,7 +52,7 @@ export function drawScene(ctx: CanvasRenderingContext2D, source: Drawable, resul
 
   result.matches.forEach((match, index) => {
     const color = matchColor(index)
-    const [a, b] = [match.a, match.b].map((ref) => result.cards[ref.card].symbols[ref.symbol])
+    const [a, b] = [match.a, match.b]
 
     ctx.beginPath()
     ctx.moveTo(a.center.x, a.center.y)

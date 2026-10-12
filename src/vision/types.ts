@@ -16,16 +16,18 @@ export interface DetectedCard {
   symbols: DetectedSymbol[]
 }
 
-export interface SymbolRef {
+export interface MatchRegion {
   card: number
-  symbol: number
+  center: Point
+  radius: number
+  contour?: Point[]
 }
 
 export interface CardMatch {
-  a: SymbolRef
-  b: SymbolRef
-  score: number
+  a: MatchRegion
+  b: MatchRegion
   confidence: number
+  method: 'keypoints' | 'patches'
 }
 
 export interface DetectionResult {

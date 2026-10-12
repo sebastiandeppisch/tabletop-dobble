@@ -25,12 +25,9 @@ for (const file of files) {
     })
   })
   for (const m of result.matches) {
-    for (const ref of [m.a, m.b]) {
-      const s = result.cards[ref.card].symbols[ref.symbol]
-      cv.circle(mat, new cv.Point(s.center.x, s.center.y), s.radius + 8, new cv.Scalar(255, 0, 200, 255), 6)
-    }
+    for (const region of [m.a, m.b]) cv.circle(mat, new cv.Point(region.center.x, region.center.y), region.radius + 8, new cv.Scalar(255, 0, 200, 255), 6)
   }
-  console.log(basename(file), result.cards.map((c) => c.symbols.length), result.matches.map((m) => `${m.score.toFixed(3)} conf ${m.confidence.toFixed(2)}`), `${result.durationMs.toFixed(0)}ms`)
+  console.log(basename(file), result.cards.map((c) => c.symbols.length), result.matches.map((m) => `${m.method} conf ${m.confidence.toFixed(2)}`), `${result.durationMs.toFixed(0)}ms`)
   writeFileSync(`${outDir}/${basename(file)}`, jpeg.encode({ data: Buffer.from(mat.data), width: image.width, height: image.height }, 80).data)
   mat.delete()
 }

@@ -15,26 +15,32 @@ SYMBOLS = list(
 SYMBOLS_PER_CARD = 8
 
 
-def render_symbol(char: str, size: int, angle: float) -> Image.Image:
+def render_symbol(char: str, size: int, angle: float, outline: bool) -> Image.Image:
     font = ImageFont.truetype(EMOJI_FONT, 109)
-    canvas = Image.new("RGBA", (160, 160), (0, 0, 0, 0))
-    ImageDraw.Draw(canvas).text((80, 80), char, font=font, embedded_color=True, anchor="mm")
+    canvas = Image.new("RGBA", (180, 180), (0, 0, 0, 0))
+    ImageDraw.Draw(canvas).text((90, 90), char, font=font, embedded_color=True, anchor="mm")
+    if outline:
+        alpha = canvas.getchannel("A").point(lambda a: 255 if a > 40 else 0).filter(ImageFilter.MaxFilter(7))
+        stroke = Image.new("RGBA", canvas.size, (35, 30, 30, 255))
+        stroke.putalpha(alpha)
+        canvas = Image.alpha_composite(stroke, canvas)
     canvas = canvas.crop(canvas.getbbox())
     scale = size / max(canvas.size)
     canvas = canvas.resize((max(1, int(canvas.width * scale)), max(1, int(canvas.height * scale))), Image.LANCZOS)
     return canvas.rotate(angle, expand=True, resample=Image.BICUBIC)
 
 
-def place_symbols(card_radius: int, chars: list[str], rng: random.Random) -> list[dict]:
+def place_symbols(card_radius: int, chars: list[str], rng: random.Random, dense: bool) -> list[dict]:
     placed: list[dict] = []
+    low, high, spacing, margin = (0.4, 0.62, 0.42, -0.02) if dense else (0.28, 0.5, 0.7, 0.05)
     for char in chars:
-        for _ in range(500):
-            size = rng.randint(int(card_radius * 0.28), int(card_radius * 0.5))
-            r = size * 0.7
-            dist = rng.uniform(0, card_radius * 0.9 - r)
+        for _ in range(800):
+            size = rng.randint(int(card_radius * low), int(card_radius * high))
+            r = size * spacing
+            dist = rng.uniform(0, card_radius * 0.92 - size * 0.45)
             phi = rng.uniform(0, 2 * math.pi)
             x, y = dist * math.cos(phi), dist * math.sin(phi)
-            if all(math.hypot(x - p["x"], y - p["y"]) > r + p["r"] + card_radius * 0.05 for p in placed):
+            if all(math.hypot(x - p["x"], y - p["y"]) > r + p["r"] + card_radius * margin for p in placed):
                 placed.append({"char": char, "x": x, "y": y, "r": r, "size": size})
                 break
         else:
@@ -79,7 +85,7 @@ def tilt(img: Image.Image, truth: dict, strength: float, rng: random.Random) -> 
     return warped
 
 
-def generate(index: int, rng: random.Random, out_dir: Path, perspective: float) -> None:
+def generate(index: int, rng: random.Random, out_dir: Path, perspective: float, dense: bool) -> None:
     w, h = 1600, 1000
     img = background(w, h, rng)
     shared = rng.choice(SYMBOLS)
@@ -99,11 +105,11 @@ def generate(index: int, rng: random.Random, out_dir: Path, perspective: float) 
     for (cx, cy_), chars in zip(centers, decks):
         rng.shuffle(chars)
         draw.ellipse((cx - radius, cy_ - radius, cx + radius, cy_ + radius), fill=(250, 248, 242), outline=(200, 200, 195), width=3)
-        while not (symbols := place_symbols(radius, chars, rng)):
+        while not (symbols := place_symbols(radius, chars, rng, dense)):
             pass
         card_truth = {"cx": cx, "cy": cy_, "r": radius, "symbols": []}
         for s in symbols:
-            sprite = render_symbol(s["char"], s["size"], rng.uniform(0, 360))
+            sprite = render_symbol(s["char"], s["size"], rng.uniform(0, 360), dense)
             px, py = int(cx + s["x"] - sprite.width / 2), int(cy_ + s["y"] - sprite.height / 2)
             img.paste(sprite, (px, py), sprite)
             card_truth["symbols"].append({"char": s["char"], "x": cx + s["x"], "y": cy_ + s["y"], "r": s["r"]})
@@ -124,7 +130,9 @@ if __name__ == "__main__":
     count = int(sys.argv[1]) if len(sys.argv) > 1 else 16
     out = Path(sys.argv[2]) if len(sys.argv) > 2 else Path(__file__).parent.parent / "tests" / "fixtures"
     seed = int(sys.argv[3]) if len(sys.argv) > 3 else 42
+    style = sys.argv[4] if len(sys.argv) > 4 else "mixed"
     out.mkdir(parents=True, exist_ok=True)
     rng = random.Random(seed)
     for i in range(count):
-        generate(i, rng, out, perspective=0.0 if i % 2 == 0 else 0.22)
+        dense = style == "dense" or (style == "mixed" and i % 4 >= 2)
+        generate(i, rng, out, perspective=0.0 if i % 2 == 0 else 0.22, dense=dense)

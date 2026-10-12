@@ -4,10 +4,9 @@ Web-App, die das gemeinsame Symbol zweier (oder mehrerer) Dobble-Karten findet �
 
 ## Pipeline
 
-1. **Karten finden** – Weißanteil (`V − S` in HSV) per Otsu, Distanztransformation + Watershed trennt sich berührende Karten, Ellipsen-Fit nur auf dem äußeren Rand (robust gegen Überlappung und Perspektive).
-2. **Symbole segmentieren** – pro Karte: Abweichung von der lokalen Kartenhelligkeit, Farbabstand (Lab) zum Kartenweiß und Kantenstärke; Closing + Hole-Fill ergibt Silhouetten.
-3. **Normalisieren** – jede Karte wird per Affinität von Ellipse auf Kreis entzerrt, jedes Symbol auf Fläche und Schwerpunkt normiert und in 36 Rotationen als 64×64-Patch (Lab + Maske) abgetastet.
-4. **Matchen** – für jedes Kartenpaar wird jedes Symbolpaar über alle Rotationen verglichen (Masken-Überdeckung + Farbabstand). Das beste Paar ist der Treffer, der Abstand zum Zweitbesten die angezeigte Sicherheit.
+1. **Karten finden**: Weißanteil (`V − S` in HSV) per Otsu, Closing gegen Symbole am Kartenrand, Distanztransformation + Watershed trennt sich berührende Karten, Ellipsen-Fit nur auf dem äußeren Rand (robust gegen Überlappung und Perspektive).
+2. **Keypoint-Matching (primär)**: ORB-Features pro Karte, kNN mit Ratio-Test, Farbcheck (Lab-Chroma um jeden Keypoint), danach eigene RANSAC für eine Ähnlichkeitstransformation in entzerrten Kartenkoordinaten inkl. Orientierungs-Check. Der größte kompakte Cluster ist das gemeinsame Symbol; die Sicherheit ergibt sich aus dem Abstand zum zweitbesten Cluster. Funktioniert auch, wenn sich Symbole berühren.
+3. **Patch-Matching (Fallback)**: Symbole segmentieren (Helligkeit, Farbe, Kanten), auf Fläche normieren und in 36 Rotationen als 64×64-Patches vergleichen.
 
 ## Entwicklung
 
@@ -21,9 +20,9 @@ npm run build    # Produktions-Build nach dist/
 Testbilder erzeugen (synthetische Karten mit Noto-Emoji, Rotation, Licht-Gradient, Perspektive):
 
 ```bash
-python3 scripts/generate_cards.py 16 tests/fixtures
-npx tsx scripts/debug.ts /tmp/out tests/fixtures/*.jpg   # Overlays rendern
-FIXTURES=/tmp/big npm test                               # gegen anderes Set testen
+python3 scripts/generate_cards.py 24 tests/fixtures 42 mixed   # mixed | sparse | dense
+npx tsx scripts/eval.ts /tmp/set                               # Trefferquote + Laufzeit
+npx tsx scripts/debug.ts /tmp/out tests/fixtures/*.jpg         # Overlays rendern
 ```
 
 ## Deployment
