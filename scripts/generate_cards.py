@@ -13,6 +13,12 @@ SYMBOLS = list(
     "🍎🍌🍇🍉🍓🥕🌽🌶🍄🌵🌲🌻🌹🍀🔥💧⛄🌙⭐🌈⚡☂🎈🎁🔑🔒💡⏰📌✂🖍📎🎸🎺🥁⚽🏀🎲🧩🚗🚲⚓✈🚀🐶🐱🐭🐸🐢🐟🐞🦋🐘🦒🦉👻💀👁👄❤❓❗🔔🏠"
 )
 SYMBOLS_PER_CARD = 8
+# size range, spacing and margin relative to the card radius
+LAYOUTS = {
+    "sparse": (0.28, 0.5, 0.7, 0.05),
+    "medium": (0.34, 0.56, 0.58, 0.02),
+    "dense": (0.4, 0.62, 0.42, -0.02),
+}
 
 
 def render_symbol(char: str, size: int, angle: float, outline: bool) -> Image.Image:
@@ -30,9 +36,9 @@ def render_symbol(char: str, size: int, angle: float, outline: bool) -> Image.Im
     return canvas.rotate(angle, expand=True, resample=Image.BICUBIC)
 
 
-def place_symbols(card_radius: int, chars: list[str], rng: random.Random, dense: bool) -> list[dict]:
+def place_symbols(card_radius: int, chars: list[str], rng: random.Random, layout: str) -> list[dict]:
     placed: list[dict] = []
-    low, high, spacing, margin = (0.4, 0.62, 0.42, -0.02) if dense else (0.28, 0.5, 0.7, 0.05)
+    low, high, spacing, margin = LAYOUTS[layout]
     for char in chars:
         for _ in range(800):
             size = rng.randint(int(card_radius * low), int(card_radius * high))
@@ -85,7 +91,7 @@ def tilt(img: Image.Image, truth: dict, strength: float, rng: random.Random) -> 
     return warped
 
 
-def generate(index: int, rng: random.Random, out_dir: Path, perspective: float, dense: bool) -> None:
+def generate(index: int, rng: random.Random, out_dir: Path, perspective: float, layout: str) -> None:
     w, h = 1600, 1000
     img = background(w, h, rng)
     shared = rng.choice(SYMBOLS)
@@ -105,11 +111,11 @@ def generate(index: int, rng: random.Random, out_dir: Path, perspective: float, 
     for (cx, cy_), chars in zip(centers, decks):
         rng.shuffle(chars)
         draw.ellipse((cx - radius, cy_ - radius, cx + radius, cy_ + radius), fill=(250, 248, 242), outline=(200, 200, 195), width=3)
-        while not (symbols := place_symbols(radius, chars, rng, dense)):
+        while not (symbols := place_symbols(radius, chars, rng, layout)):
             pass
         card_truth = {"cx": cx, "cy": cy_, "r": radius, "symbols": []}
         for s in symbols:
-            sprite = render_symbol(s["char"], s["size"], rng.uniform(0, 360), dense)
+            sprite = render_symbol(s["char"], s["size"], rng.uniform(0, 360), layout == "dense")
             px, py = int(cx + s["x"] - sprite.width / 2), int(cy_ + s["y"] - sprite.height / 2)
             img.paste(sprite, (px, py), sprite)
             card_truth["symbols"].append({"char": s["char"], "x": cx + s["x"], "y": cy_ + s["y"], "r": s["r"]})
@@ -134,5 +140,5 @@ if __name__ == "__main__":
     out.mkdir(parents=True, exist_ok=True)
     rng = random.Random(seed)
     for i in range(count):
-        dense = style == "dense" or (style == "mixed" and i % 4 >= 2)
-        generate(i, rng, out, perspective=0.0 if i % 2 == 0 else 0.22, dense=dense)
+        layout = style if style != "mixed" else ("dense" if i % 4 >= 2 else "sparse")
+        generate(i, rng, out, perspective=0.0 if i % 2 == 0 else 0.22, layout=layout)
