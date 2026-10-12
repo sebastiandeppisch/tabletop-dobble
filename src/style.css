@@ -76,6 +76,18 @@ button.primary {
   letter-spacing: 0.02em;
 }
 
+.header-controls {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-end;
+  gap: 0.4rem;
+}
+
+button.small {
+  padding: 0.35rem 0.8rem;
+  font-size: 0.8rem;
+}
+
 .toggle {
   display: flex;
   align-items: center;

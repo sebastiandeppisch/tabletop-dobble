@@ -20,6 +20,7 @@ const showDetails = ref(false)
 const still = shallowRef<ImageBitmap | null>(null)
 const result = shallowRef<DetectionResult | null>(null)
 const analyzing = ref(false)
+const notice = ref<string | null>(null)
 
 const grabCanvas = document.createElement('canvas')
 const grabContext = grabCanvas.getContext('2d', { willReadFrequently: true })!
@@ -29,6 +30,7 @@ const source = computed<Drawable | null>(() => still.value ?? (mode.value === 'c
 const paused = computed(() => mode.value === 'camera' && still.value !== null)
 
 const status = computed(() => {
+  if (notice.value) return { text: notice.value, tone: 'ok' }
   if (detector.error.value) return { text: detector.error.value, tone: 'error' }
   if (camera.error.value) return { text: `Kamera: ${camera.error.value}`, tone: 'error' }
   if (!detector.ready.value) return { text: 'OpenCV wird geladen …', tone: 'muted' }
@@ -102,6 +104,52 @@ async function togglePause() {
   await analyze(still.value)
 }
 
+function notify(text: string) {
+  notice.value = text
+  setTimeout(() => notice.value === text && (notice.value = null), 2500)
+}
+
+// Draws synchronously so the frame matches the moment of the tap.
+function frameBlob(drawable: Drawable): Promise<Blob> {
+  const { width, height } = sourceSize(drawable)
+  const out = document.createElement('canvas')
+  out.width = width
+  out.height = height
+  out.getContext('2d')!.drawImage(drawable, 0, 0)
+  return new Promise((resolve, reject) =>
+    out.toBlob((blob) => (blob ? resolve(blob) : reject(new Error('Frame konnte nicht erzeugt werden'))), 'image/png'),
+  )
+}
+
+async function copyFrame() {
+  const drawable = source.value
+  if (!drawable) return
+  const blob = frameBlob(drawable)
+  try {
+    await navigator.clipboard.write([new ClipboardItem({ 'image/png': blob })])
+    notify('Frame kopiert')
+    return
+  } catch {
+    // Clipboard images are not supported everywhere; fall back to share sheet or download.
+  }
+
+  const file = new File([await blob], `dobble-${new Date().toISOString().replace(/[:.]/g, '-')}.png`, { type: 'image/png' })
+  try {
+    if (navigator.canShare?.({ files: [file] })) {
+      await navigator.share({ files: [file] })
+      return
+    }
+  } catch {
+    // Share was cancelled or blocked; download instead.
+  }
+  const link = document.createElement('a')
+  link.href = URL.createObjectURL(file)
+  link.download = file.name
+  link.click()
+  URL.revokeObjectURL(link.href)
+  notify('Frame gespeichert')
+}
+
 function pickPhoto() {
   fileInput.value?.click()
 }
@@ -126,10 +174,15 @@ onBeforeUnmount(() => cancelAnimationFrame(frame))
   <main class="app">
     <header class="header">
       <h1>Dobble Matcher</h1>
-      <label class="toggle">
-        <input v-model="showDetails" type="checkbox" />
-        Details
-      </label>
+      <div class="header-controls">
+        <label class="toggle">
+          <input v-model="showDetails" type="checkbox" />
+          Details
+        </label>
+        <button class="small" :disabled="mode === 'idle'" title="Aktuellen Frame ohne Overlay kopieren" @click="copyFrame">
+          Frame kopieren
+        </button>
+      </div>
     </header>
 
     <section class="stage">
