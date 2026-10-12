@@ -189,31 +189,43 @@ function findCards(cv: Cv, full: Mat, scope: Scope): CardRegion[] {
   cv.threshold(dist, peaks, maxDist * 0.5, 255, cv.THRESH_BINARY)
   peaks.convertTo(peaks, cv.CV_8UC1)
 
-  const markers = scope.add(cv.Mat.zeros(rgb.rows, rgb.cols, cv.CV_32SC1))
-  let seedCount = 0
-  forEachContour(cv, peaks, scope, (_, index, all) => {
-    seedCount++
-    cv.drawContours(markers, all, index, new cv.Scalar(seedCount), cv.FILLED)
+  const seeds: { x: number; y: number; r: number }[] = []
+  forEachContour(cv, peaks, scope, (contour) => {
+    const m = cv.moments(contour)
+    if (!m.m00) return
+    const x = m.m10 / m.m00
+    const y = m.m01 / m.m00
+    seeds.push({ x, y, r: dist.floatAt(Math.round(y), Math.round(x)) })
   })
-  if (seedCount === 0) return []
+  if (!seeds.length) return []
 
-  const outside = scope.add(new cv.Mat())
-  cv.dilate(filled, outside, kernel, new cv.Point(-1, -1), 3)
-  const outsideLabel = seedCount + 1
-  const markerData = markers.data32S
-  const outsideData = outside.data
+  // Power-diagram split: each pixel goes to the card whose estimated rim is closest.
+  const labels = new Int32Array(imageArea)
   const filledData = filled.data
-  for (let i = 0; i < markerData.length; i++) if (outsideData[i] === 0) markerData[i] = outsideLabel
-
-  cv.watershed(rgb, markers)
+  for (let y = 0; y < rgb.rows; y++) {
+    for (let x = 0; x < rgb.cols; x++) {
+      const i = y * rgb.cols + x
+      if (!filledData[i]) continue
+      let best = 0
+      let bestScore = Infinity
+      seeds.forEach((seed, k) => {
+        const score = Math.hypot(x - seed.x, y - seed.y) - seed.r
+        if (score < bestScore) {
+          bestScore = score
+          best = k + 1
+        }
+      })
+      labels[i] = best
+    }
+  }
 
   const regions: CardRegion[] = []
-  for (let label = 1; label <= seedCount; label++) {
+  for (let label = 1; label <= seeds.length; label++) {
     const small = scope.add(cv.Mat.zeros(rgb.rows, rgb.cols, cv.CV_8UC1))
     const smallData = small.data
     let area = 0
-    for (let i = 0; i < markerData.length; i++) {
-      if (markerData[i] === label && filledData[i]) {
+    for (let i = 0; i < labels.length; i++) {
+      if (labels[i] === label) {
         smallData[i] = 255
         area++
       }
@@ -253,12 +265,17 @@ function findCards(cv: Cv, full: Mat, scope: Scope): CardRegion[] {
   return regions.sort((a, b) => a.center.x - b.center.x || a.center.y - b.center.y)
 }
 
-// Contour points on the outer card rim; drops cut lines between touching cards so the ellipse fit stays round.
+// Contour points on the outer, convex card rim. Drops cut lines between touching cards
+// and dents from symbols touching the edge so the ellipse fit stays true.
 function outerRimPoints(cv: Cv, contour: Mat, dist: Mat, scope: Scope): Mat {
+  const hull = scope.add(new cv.Mat())
+  cv.convexHull(contour, hull, false, true)
   const points: number[] = []
   const data = contour.data32S
   for (let i = 0; i < data.length; i += 2) {
-    if (dist.floatAt(data[i + 1], data[i]) <= 3) points.push(data[i], data[i + 1])
+    if (dist.floatAt(data[i + 1], data[i]) > 3) continue
+    if (Math.abs(cv.pointPolygonTest(hull, new cv.Point(data[i], data[i + 1]), true)) > 2) continue
+    points.push(data[i], data[i + 1])
   }
   return scope.add(cv.matFromArray(points.length / 2, 1, cv.CV_32SC2, points))
 }
